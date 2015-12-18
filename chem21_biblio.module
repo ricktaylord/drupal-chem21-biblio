@@ -1,0 +1,280 @@
+<?php
+
+/******************* API resources **********************************/
+
+/**
+ * Implements of hook_services_resources().
+ */
+function chem21_biblio_services_resources() {
+  $api = array(
+    'biblio' => array(
+      'operations' => array(
+        'retrieve' => array(
+          'help' => 'Retrieves a biblio',
+          'callback' => '_chem21_biblio_retrieve',
+          'access callback' => 'user_access',
+          'access arguments' => array('access content'),
+          'access arguments append' => FALSE,
+          'args' => array(
+            array(
+              'name' => 'bid',
+              'type' => 'int',
+              'description' => 'Biblio ID',
+              'source' => array('path'=>0),
+              'optional' => FALSE,
+              'default' => '0',
+            ),
+          ),
+        ),
+        'index' => array(
+          'help' => 'Given a search term, return a list of biblio matches',
+          'callback' => '_chem21_biblio_search',
+          'access callback' => 'user_access',
+          'access arguments' => array('edit content'),
+          'access arguments append' => FALSE,
+          'args' => array(
+            array(
+              'name' => 'term',
+              'type' => 'string',
+              'description' => 'Search term',
+              'source' => array('param'=>'term'),
+              'default value' =>"",
+              'optional' => TRUE
+            ),
+          ),
+        ),
+      ),
+      'actions' => array(
+        'import' => array(
+          'help' => 'Import a batch of chem21_biblios from formatted data',
+          'callback' => '_chem21_biblio_import',
+          'access callback' => 'user_access',
+          'access arguments' => array('edit content'),
+          'access arguments append' => FALSE,
+          'args' => array(
+            array(
+              'name' => 'data',
+              'type' => 'struct',
+              'description' => 'New lesson weights',
+              'source' => 'data',
+              'optional' => FALSE
+            ),
+            array(
+              'name' => 'biblio_style',
+              'type' => 'string',
+              'description' => 'Import style',
+              'source' => array('param'=>'style'),
+              'optional' => TRUE,
+            ),
+          )
+        )
+      )
+    ),
+  );
+  return $api;
+} 
+
+function _chem21_biblio_retrieve($bId) {
+  $chem21_biblio = biblio_load($lId);
+  $chem21_biblio->rendered = $chem21_biblio->getText('citeproc');
+  return $chem21_biblio;
+}
+
+function _chem21_biblio_search($term) {
+  #$q=$params['q'];
+  watchdog("Biblio search", $term);
+  $query = new EntityFieldQuery();
+  $query
+    ->entityCondition('entity_type', 'biblio')
+    ->propertyCondition('title', '%'.$term.'%', 'LIKE');
+  $result = $query->execute();
+  watchdog("Biblio search", print_r($result,TRUE));
+  $out = array();
+  foreach($result['biblio'] as $id=>$biblio) {
+    $bib = biblio_load($id);
+    watchdog("Biblio search", print_r($bib,TRUE));
+    $wr = entity_metadata_wrapper('biblio',$bib);
+    watchdog("Biblio search", print_r($wr,TRUE));
+    $out[] = array('id'=>$bib->biblio_citekey['und'][0]['value'], 'value'=>$bib->title);
+  }
+  return $out;
+}
+
+function _chem21_biblio_import($data, $style) {
+  if(!$style) {
+    $style = "endnotetagged";
+  }
+  $bib_data = $data['data'];
+  // Get the relevant chem21_biblio style class to handle the information.
+  $chem21_biblio_style = biblio_get_class_from_style($style);
+
+  // Import the Biblios.
+  $chem21_biblios = $chem21_biblio_style->import($data);
+  return $chem21_biblios;
+}
+
+/*******************************************
+ * Filter
+ * Largely inspired from the footnote module
+ *
+ *******************************************/
+function _chem21_biblio_citekey_print($citekey) {
+  $query = new EntityFieldQuery();
+  $query
+    ->entityCondition('entity_type', 'biblio')
+    ->fieldCondition('biblio_citekey', 'value', $citekey);
+  $r = $query->execute();
+  $bids = array_keys($r['biblio']);
+  $bid = reset($bids);
+  if ($bid > 0) {
+    $chem21_biblio = biblio_load($bid);
+    return $chem21_biblio->getText('citeproc');
+  } else {
+    return t("Citekey @cite not found", array('@cite' => $citekey));
+  }
+}
+
+function chem21_biblio_filter_info() {
+  $filters['chem21_biblio_filter_reference'] = array(
+    'title' => t('Biblio module references &lt;bib&gt; <i>or</i> [bib]'),
+    'description' => t('Use &lt;bib&gt;citekey&lt;/bib&gt; or [bib]citebkey[/bib]to insert automatically numbered references.'),
+    'prepare callback' => '_chem21_biblio_filter_reference_prepare',
+    'process callback' => '_chem21_biblio_filter_reference_process',
+    'tips callback'    => '_chem21_biblio_filter_reference_tips',
+  );
+  $filters['chem21_biblio_filter_ireference'] = array(
+    'title' => t('Biblio module inline references &lt;ibib&gt; <i>or</i> [ibib]'),
+    'description' => t('Use &lt;bib&gt;citekey&lt;/bib&gt; or [bib]citebkey[/bib]to insert automatically numbered references.'),
+    'prepare callback' => '_chem21_biblio_filter_ireference_prepare',
+    'process callback' => '_chem21_biblio_filter_ireference_process',
+    'tips callback'    => '_chem21_biblio_filter_ireference_tips',
+  );
+  return $filters;
+}
+
+function _chem21_biblio_filter_reference_tips($filter, $format, $long = FALSE) {
+  if (!$long) {
+    // This string will be shown in the content add/edit form
+    return t('Use &lt;bib&gt;<i>citekey</i>&lt;/bib&gt; <b><i>or</i></b> [bib]<i>citekey</i>[/bib] to insert automatically numbered references.');
+  }
+  else {
+    return t('You can cite references directly into texts with <code>&lt;bib&gt;<i>citekey</i>&lt;/bib&gt; <b><i>or</i></b> [bib]<i>citekey</i>[/bib]</code>. This will be replaced with a running number (the publication reference) and the publication referenced by the citekey within the &lt;bib&gt; tags will be printed at the bottom of the page (the reference).');
+  }
+}
+
+function _chem21_biblio_filter_ireference_tips($filter, $format, $long = FALSE) {
+  return t('This creates an inline reference to another publication.');
+}
+
+function _chem21_biblio_filter_reference_prepare($text, $filter, $format, $langcode, $cache, $cache_id) {
+  return $text;
+}
+
+function _chem21_biblio_filter_ireference_prepare($text, $filter, $format, $langcode, $cache, $cache_id) {
+  return $text;
+}
+
+function _chem21_biblio_filter_reference_process($text, $filter, $format, $langcode, $cache, $cache_id) {
+  $pattern = array('|\[bib](.*?)\[/bib]|s', '|<bib>(.*?)</bib>|s');
+  if (variable_get('biblio_footnotes_integration', 0) && module_exists('footnotes')) { // this is used with footnote module integration to replace the <bib> tags with <fn> tags
+    $text = preg_replace_callback($pattern, '_chem21_biblio_filter_footnote_callback', $text);
+    return $text;
+  }
+  else {
+    $text = preg_replace_callback($pattern, '_chem21_biblio_filter_replace_callback', $text);
+    //Replace tag <footnotes> with the list of footnotes.
+    //If tag is not present, by default add the footnotes at the end.
+    //Thanks to acp on drupal.org for this idea. see http://drupal.org/node/87226
+    $footer = '';
+    $footer = _chem21_biblio_filter_replace_callback(NULL, 'output footer');
+    if (preg_match('/<bibliography(\/( )?)?>/', $text) > 0) {
+      $text = preg_replace('/<bibliography(\/( )?)?>/', $footer, $text, 1);
+      return $text;
+    }
+    else {
+      return $text . "\n\n" . $footer;
+    }
+  }
+}
+
+function _chem21_biblio_filter_ireference_process($text, $filter, $format, $langcode, $cache, $cache_id) {
+  $pattern = array('|\[ibib](.*?)\[/ibib]|s', '|<ibib>(.*?)</ibib>|s');
+  $text = preg_replace_callback($pattern, '_chem21_biblio_ifilter_replace_callback', $text);
+  return $text;
+}
+
+function _chem21_biblio_ifilter_replace_callback($matches) {
+    $text =  _chem21_biblio_citekey_print($matches[1]) ;
+  return $text;
+}
+
+function _chem21_biblio_filter_footnote_callback($matches, $square_brackets = FALSE) {
+  if ($square_brackets)  {
+    $text = '[fn]' . _chem21_biblio_citekey_print($matches[1]) . "</fn>";
+  }
+  else {
+    $text = '<fn>' . _chem21_biblio_citekey_print($matches[1]) . "</fn>";
+  }
+  return $text;
+}
+/**
+ * Helper function called from preg_replace_callback() above
+ *
+ * Uses static vars to temporarily store footnotes found.
+ * In my understanding, this is not threadsafe?!
+ */
+function _chem21_biblio_filter_replace_callback($matches, $op = '') {
+  static $n = 0;
+  static $store_matches = array();
+  $str = '';
+  if ($op == 'output footer') {
+    if ($n > 0) {
+      $str = '<hr /><h3>' . t('References') . '</h3>';
+      $str .= '<div class="references"><ol>';
+      for ($m = 1; $m <= $n; $m++) {
+        $str .= '<li id="reference' . $m . '"><a name="ref' . $m . '">' . _chem21_biblio_citekey_print($store_matches[$m -1]) . " </a></li>\n\n";
+      }
+      $str .= '</ol></div>';
+    }
+    $n = 0;
+    $store_matches = array();
+    return $str;
+  }
+  //default op: act as called by preg_replace_callback()
+  $ref = array_search($matches[1], $store_matches);
+  if ($ref === FALSE) {
+    $n++;
+    array_push($store_matches, $matches[1]);    //$stores_matches[$matches[1]] = $n;
+    $ref = $n;
+  }
+  else {
+    $ref++;
+  }
+  $allowed_tags = array();
+  $title = filter_xss($matches[1], chem21_biblio_get_allowed_tags());
+  //html attribute cannot contain quotes
+  $title = str_replace('"', "&quot;", $title);
+  //remove newlines. Browsers don't support them anyway and they'll confuse line break converter in filter.module
+  $title = str_replace("\n", " ", $title);
+  $title = str_replace("\r", "", $title);
+  //return '<sup class="see_reference" title="'. $title .'"><a href="#reference'. $n .'">'. $n .'</a></sup>';
+  //$text = '<span><a href="#reference'. $n .'">['. $n .']</a> </span>';
+  //$text = '<span>['. $n .']</span>';
+  //$text .= '<span class="hovertip">'._chem21_biblio_citekey_print($title) .'</span>';
+  $text = '<span hovertip="reference' . $ref . '"><a href="#ref' . $ref . '">[' . $ref . ']</a></span>';
+  if (module_exists('hovertip')) {
+    $text = '<span hovertip="reference' . $ref . '"><a href="#ref' . $ref . '">[' . $ref . ']</a></span>';
+    $text .= '<span id="reference' . $ref . '" class="hovertip">' . _chem21_biblio_citekey_print($title) . '</span>';
+  }
+  else {
+    $text = '<a href="#ref' . $ref . '" title="Reference ' . $ref . '">[' . $ref . ']</a>';
+
+  }
+  return $text;
+}
+
+function chem21_biblio_get_allowed_tags() {
+  return array('a', 'b', 'i', 'u', 'sub', 'sup', 'span');
+}
+
+/******************* helper functions *******************************/

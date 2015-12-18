@@ -1,0 +1,6 @@
+name = CHEM21 Biblio functions
+description = Adds services functions to biblio module
+core = 7.x
+
+dependencies[] = biblio
+dependencies[] = services
